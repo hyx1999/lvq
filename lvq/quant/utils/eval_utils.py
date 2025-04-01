@@ -3,7 +3,7 @@ import logging
 from tqdm import tqdm
 
 
-def eval_ppl(model, testloader, device, args):
+def eval_ppl(model, testloader, device):
     ppl = eval_ppl_impl(model, testloader, device)
     return ppl
 

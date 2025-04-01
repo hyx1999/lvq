@@ -6,6 +6,7 @@ from lvq.quant.scheduler import get_cosine_schedule_with_warmup
 from tqdm import tqdm
 from sklearn.cluster import MiniBatchKMeans
 
+DISABLE_TQDM = False
 
 class TrainingStates:
     
@@ -15,16 +16,13 @@ class TrainingStates:
 
     def step(self):
         self.iteration += 1
+        self.iteration = min(self.iteration, self.train_iters)
 
 
-class LearnIndex(nn.Module):
+class StaticIndex(nn.Module):
     def __init__(
         self, 
-        states: TrainingStates,
         index_shape: torch.Size,
-        hard=False,
-        temperature=[4.0, 0.1], 
-        scale_multiplier=[1e2, 5e2],
         device=None,
         dtype=None,
     ):
@@ -41,63 +39,33 @@ class LearnIndex(nn.Module):
         temperature parameter needs more attention, we should do annealing it during training
         '''
         super().__init__()
-        self.states = states
-        self.M = index_shape[-1]
         self.dtype = dtype
         self.device = device
-        self.mask_difference = 1.0
-        self.initial_index_shape = index_shape
-        self.temperature = temperature
-        self.scale_multiplier = scale_multiplier
-        
-        print(index_shape, index_shape.numel())
-        
-        self.gate = nn.Parameter(torch.empty(
+        self.M = index_shape[-1]
+                
+        self.gate = nn.Buffer(torch.empty(
             *index_shape,
             device=device, 
             dtype=dtype
         ))
-        self.options = nn.Buffer(self.init_options())
-    
-        self.hard = hard
-
-        self.current_scale_multiplier = self.scale_multiplier[0]
-        self.current_temperature = self.temperature[0]
-        self.current_max_prob = 0.0
+        self.options = nn.Buffer(self.init_options())    
         
     def init_options(self):
         options = torch.zeros(self.M, self.M,
                         device=self.device, dtype=self.dtype)
         for i in range(self.M):
             options[i, :].data += (torch.arange(0, self.M) == i)\
-                .type_as(options)\
-                .unsqueeze(0)\
-                .repeat(options.shape[0], 1)
+                .type_as(options)
+        return options
 
-    def forward(self): 
-        if self.training:
-            start_temp, end_temp = self.temperature 
-            self.current_temperature = start_temp + (end_temp - start_temp) * (self.states.iteration / self.states.train_iters)
-            start_scale, end_scale = self.scale_multiplier
-            self.current_scale_multiplier = start_scale + (end_scale - start_scale) * (self.states.iteration / self.states.train_iters)
-            
-            sampling_tensor = self.gate * self.current_scale_multiplier
-            choices = F.gumbel_softmax(sampling_tensor, tau=self.current_temperature, hard=self.hard, dim=-1)
-            weighted_index = (choices.unsqueeze(-2) @ self.options).squeeze(-2)  # [..., 1, M] @ [M, M] => [..., 1, M] => [..., M]
-            weighted_index = weighted_index.reshape(self.initial_index_shape)
-
-            # metric
-            self.current_max_prob = choices.max(-1)[0].mean().item()
-        else:
-            weighted_index = self.options[self.gate.argmax(dim=-1)]
-
-        return weighted_index
+    def forward(self):
+        index = self.options[self.gate.argmax(dim=-1)]
+        return index
 
 
 class Reconstructor(nn.Module):
     
     def __init__(self, 
-        states: TrainingStates,
         in_features: int,
         out_features: int,
         num_lut: int = 3,
@@ -115,53 +83,37 @@ class Reconstructor(nn.Module):
         self.lut_size = lut_size
         self.vec_size = vec_size
         self.group_size = group_size
+        self.dtype = dtype
+        self.device = device
 
-        self.learn_index = LearnIndex(
-            states,
+        self.learn_index = StaticIndex(
             torch.Size((num_lut, in_features // vec_size, out_features, lut_size)),
             device=device,
             dtype=dtype
         )
         self.codebook = nn.Parameter(
-            torch.empty((num_lut, in_features // vec_size, lut_size, vec_size)),
-            device=device,
-            dtype=dtype,
+            torch.empty(num_lut, in_features // vec_size, lut_size, vec_size, device=device, dtype=dtype)
         )
         self.scales = nn.Parameter(
-            torch.empty(out_features, in_features // group_size),
-            device=device,
-            dtype=dtype,
+            torch.empty(out_features, in_features // group_size, device=device, dtype=dtype)
+        )
+        self.zeros = nn.Buffer(
+            torch.empty(out_features, in_features // group_size, device=device, dtype=torch.int8)
         )
 
     def forward(self):
-        weighted_index: torch.Tensor = self.learn_index()  # (num_lut, in_features // vec_size, out_features, lut_size)
-        # (num_lut, in_features // vec_size, out_features, lut_size) @ (num_lut, in_features // vec_size, lut_size, vec_size)
-        #   => (num_lut, in_features // vec_size, out_features, vec_size)
-        #   => (num_lut, out_features, in_features // vec_size, vec_size)
+        weighted_index: torch.Tensor = self.learn_index()
         weight = (weighted_index @ self.codebook)\
             .transpose(1, 2)\
             .sum(dim=0)\
-            .reshape(self.out_features, self.in_features)
+            .reshape(self.out_features, self.in_features // self.group_size, self.group_size)
+        weight = (weight - self.zeros.type_as(weight).unsqueeze(-1)) * self.scales.unsqueeze(-1)
+        weight = weight.reshape(self.out_features, self.in_features)
         return weight
 
 
 @torch.no_grad()
 def init_reconstructor_awq(
-    reconstructor: Reconstructor,
-    weight: torch.Tensor,
-    weight_scale: torch.Tensor,
-):
-    raise NotImplementedError
-
-
-def rmsnorm(x: torch.Tensor, eps: float = 1e-5) -> torch.Tensor:
-    x_scale = x.pow(2).mean(-1).sqrt()
-    norm_x = x / (x_scale.unsqueeze(-1) + eps)
-    return norm_x
-
-
-@torch.no_grad()
-def init_reconstructor_kmeans(
     reconstructor: Reconstructor,
     weight: torch.Tensor,
 ):
@@ -171,34 +123,38 @@ def init_reconstructor_kmeans(
     lut_size = reconstructor.lut_size
     vec_size = reconstructor.vec_size
     group_size = reconstructor.group_size
+    max_int: int = (2 ** num_lut) - 1
 
+    assert lut_size == 16
+  
     weight = weight.reshape((
         out_features,
         in_features // group_size,
         group_size,
     ))
-    scales = weight.pow(2).mean(dim=-1).sqrt()
-    norm_weight = rmsnorm(weight)
-    norm_weight = norm_weight.reshape((out_features, in_features))
-
+    max_w = weight.max(dim=-1, keepdim=True).values
+    min_w = weight.min(dim=-1, keepdim=True).values
+    scales = (max_w - min_w).clamp(min=1e-5) / max_int
+    zeros  = (-torch.round(min_w / scales)).clamp_(0, max_int)
+    qweight = torch.clamp(torch.round(weight / scales) + zeros, 0, max_int).to(torch.int8)
+    qweight = qweight\
+        .reshape((out_features, in_features // vec_size, vec_size))\
+        .transpose(0, 1)
+    
     for iter in range(num_lut):
-        norm_weight = norm_weight\
-            .reshape((out_features, in_features // vec_size, vec_size))\
-            .transpose(0, 1)
-        for j in tqdm(range(in_features // vec_size), desc="init codebook[{}]...".format(iter)):
-            weight_group = norm_weight[j, ...]
-            kmeans = MiniBatchKMeans(
-                n_clusters=lut_size
-            ).fit(weight_group.cpu().float().numpy())
-            indices = torch.tensor(kmeans.labels_, dtype=torch.int32, device=weight.device)
-            code = torch.tensor(kmeans.cluster_centers_, dtype=weight.dtype, device=weight.device)
-            gate = weight_group @ code.T  # (R, V) @ (V, M)  =>  (R, M)
-            norm_gate = rmsnorm(gate)
-
-            norm_weight[j, ...].sub_(code[indices])
-            reconstructor.codebook[iter, j].copy_(code)
+        for j in range(in_features // vec_size):
+            code = torch.tensor(
+                [[(x >> 3) & 1, (x >> 2) & 1, (x >> 1) & 1, (x >> 0) & 1] for x in range(lut_size)],
+                dtype=weight.dtype,
+                device=weight.device,
+            )
+            index = (qweight[j] >> iter) & 1
+            norm_gate = (index[:, None, :] == code.to(torch.int8)[None, :, :]).sum(dim=-1).to(weight.dtype) / 4.0
+            reconstructor.codebook[iter, j].copy_(code * (2 ** iter))
             reconstructor.learn_index.gate[iter, j].copy_(norm_gate)
-    reconstructor.scales.data.copy_(scales)
+    reconstructor.scales.data.copy_(scales.squeeze(-1))
+    reconstructor.zeros.data.copy_(zeros.squeeze(-1).to(torch.int8))
+
 
 @torch.no_grad()
 def reconstruct_weight(
@@ -210,6 +166,7 @@ def reconstruct_weight(
     vec_size: int = 4,
     group_size: int = -1,
     train_iters: int = 1024,
+    return_weight: bool = False
 ):
     out_features, in_features = weight.shape
     device = weight.device
@@ -220,9 +177,7 @@ def reconstruct_weight(
     assert in_features % group_size == 0
     assert in_features % vec_size == 0
     
-    states = TrainingStates(train_iters)
     reconstructor = Reconstructor(
-        states,
         in_features=in_features,
         out_features=out_features,
         num_lut=num_lut,
@@ -234,7 +189,7 @@ def reconstruct_weight(
     )
     
     # init params...
-    init_reconstructor_kmeans(reconstructor, weight)
+    init_reconstructor_awq(reconstructor, weight)
     
     # optimization...
     optimizer = AdamW(reconstructor.parameters(), lr=args.lr)
@@ -245,14 +200,29 @@ def reconstruct_weight(
     )
         
     with torch.enable_grad():
-        for iter in tqdm(range(train_iters), desc="optimize lvq..."):
+        bar = tqdm(range(train_iters), desc="optimize lvq...", disable=DISABLE_TQDM)
+        for iter in range(train_iters):
             optimizer.zero_grad()
 
             recons_weight: torch.Tensor = reconstructor()
             d_w = weight - recons_weight
             loss = torch.trace(d_w @ hessian @ d_w.T)
-
             loss.backward()
-            states.step()
             optimizer.step()
             scheduler.step()
+            bar.update(1)
+            if iter % 64 == 0:
+                bar.set_postfix_str("loss = {:.5f}".format(loss.item()))
+
+    new_weight = None
+    if return_weight:
+        reconstructor.eval()
+        new_weight = reconstructor()
+    
+    quant_results = {
+        "scales": reconstructor.scales.data,
+        "codebook": reconstructor.codebook.data,
+        "index": reconstructor.learn_index.gate.argmax(dim=-1),
+    }
+    
+    return quant_results, new_weight

@@ -3,7 +3,7 @@ import datasets
 import random
 from transformers import AutoTokenizer
 
-def get_wikitext2(nsamples, seed, seqlen, model, hf_token, eval_mode=False):
+def get_wikitext2(nsamples, seed, seqlen, model):
     traindata = datasets.load_dataset(
         "parquet",
         data_files={'train': "/data/wikitext/wikitext-2-v1/train-*.parquet"},
