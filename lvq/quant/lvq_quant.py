@@ -3,24 +3,27 @@ import gc
 import torch
 import torch.nn as nn
 from transformers import PreTrainedModel
-from typing import List
+from .utils import model_utils
 
+@torch.no_grad()
 def lvq_quant(
     args,
     lm: PreTrainedModel,
     dataloader: torch.Tensor,
+    dev: str,
 ):
     logger = logging.getLogger(__name__)
+    
+    model_utils.check_model(model)
 
     logger.info("Starting ...")
     
     # move embedding layer and first layer to target device
     model = lm.model
-    dev = lm.device
     use_cache = model.config.use_cache
     model.config.use_cache = False
     
-    layers = []
+    layers = model_utils.get_layers(model)
     
     layers[0] = layers[0].to(dev)
     dtype = next(layers[0].parameters()).dtype
@@ -40,19 +43,17 @@ def lvq_quant(
             inps[cache["i"]] = inp
             cache["i"] += 1
             cache["attention_mask"] = kwargs["attention_mask"]
-            cache["position_ids"] = kwargs["position_ids"]
             raise ValueError
 
     layers[0] = Catcher(layers[0])
 
-    with torch.no_grad():
-        for batch in dataloader:
-            if cache["i"] >= args.nsamples:
-                break
-            try:
-                model(batch[0].to(dev))
-            except ValueError:
-                pass
+    for batch in dataloader:
+        if cache["i"] >= args.nsamples:
+            break
+        try:
+            model(batch[0].to(dev))
+        except ValueError:
+            pass
     
     # move embedding layer and first layer to cpu
     layers[0] = layers[0].module
@@ -61,9 +62,15 @@ def lvq_quant(
     for i in range(len(layers)):
         logger.info(f"=== Start quantize layer {i} ===")
         layer = layers[i].to(dev)
-
         
+        outps = torch.zeros_like(inps)
+        for j in range(args.nsamples):
+            outps[j] = layer(inps[j].unsqueeze(0), attention_mask=cache["attention_mask"])[0]
+        
+                
+        inps.copy_(outps)
         del layer
+        del outps
         torch.cuda.empty_cache()
 
     torch.cuda.empty_cache()
