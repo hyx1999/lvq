@@ -35,3 +35,14 @@ def get_named_linears(layer: nn.Module):
         if isinstance(module, nn.Linear):
             named_linears[name] = module
     return named_linears
+
+def replace_module(layer: nn.Module, name: str, new_module: nn.Module):
+    module_name = name.split(".")[-1]
+    parent_name = ".".join(name.split(".")[:-1])
+    parent = layer.get_submodule(parent_name)
+    setattr(parent, module_name, new_module)
+
+def is_ffn_linear(model: PreTrainedModel, name: str):
+    if isinstance(model, LlamaForCausalLM):
+        return any(n in name for n in ['gate_proj', 'up_proj', 'down_proj'])
+    raise ValueError
