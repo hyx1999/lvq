@@ -6,9 +6,9 @@ from lvq.quant.scheduler import get_cosine_schedule_with_warmup
 from lvq.modules import LvqLinear
 from tqdm import tqdm
 from sklearn.cluster import KMeans
+import logging
 
 DISABLE_TQDM = False
-
 
 @torch.no_grad()
 def init_reconstructor_linear(
@@ -69,6 +69,7 @@ def init_reconstructor_kmeans(
         group_size,
     ))
     scales = weight.abs().max(dim=-1).values
+    # scales = weight.pow(2).mean(dim=-1).sqrt()
     norm_weight = normalize(weight, scales)
     norm_weight = norm_weight\
         .reshape((out_features, in_features // vec_size, vec_size))\
@@ -88,7 +89,7 @@ def init_reconstructor_kmeans(
 
 
 @torch.no_grad()
-def reconstruct_weight(
+def reconstruct_weight_adamw(
     args,
     weight: torch.Tensor,
     hessian: torch.Tensor,  # [in_features, in_features]
@@ -98,7 +99,7 @@ def reconstruct_weight(
     group_size: int = 128,
     train_iters: int = 2048,
     return_weight: bool = False,
-    init_method: str = "linear",
+    init_method: str = "kmeans",
 ):
     out_features, in_features = weight.shape
     device = weight.device
@@ -150,8 +151,16 @@ def reconstruct_weight(
             optimizer.step()
             scheduler.step()
             bar.update(1)
-            if iter % 128 == 0:
+            if iter % 8 == 0:
                 bar.set_postfix_str("loss = {:.5f}".format(loss.item()))
+    
+    # compute loss
+    reconstructor.eval()
+    recons_weight: torch.Tensor = reconstructor.quantize_weight()
+    d_w = weight - recons_weight
+    loss = torch.trace(d_w @ hessian @ d_w.T).item()
+    logging.info("loss = {:4f}".format(loss))
+    
 
     new_weight = None
     if return_weight:

@@ -47,6 +47,14 @@ class LvqLinear(nn.Module):
             device=device,
         )
 
+    @torch.no_grad()
+    def update_scale(self, group_id: int, scale: torch.Tensor):
+        self.scales[:, group_id].copy_(scale.view(-1))
+    
+    @torch.no_grad()
+    def update_codebook(self, lut_id: int, group_id: int, code: torch.Tensor):
+        self.quantizer.quantizers[lut_id].codebook[group_id, ...].copy_(code)
+
     def quantize_weight(self) -> torch.Tensor:
         weight = self.weight.reshape(self.out_features, self.in_features // self.group_size, self.group_size)
         weight = weight / self.scales.unsqueeze(-1)
