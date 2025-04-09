@@ -84,8 +84,6 @@ def lvq_quant(
     assert inps.shape[0] % BS == 0
     
     for i in range(len(layers)):
-        if i >= 1:
-            break
         logging.info(f"=== Start quantize layer {i} ===")
         layer = layers[i].to(dev)
         
@@ -132,7 +130,6 @@ def lvq_quant(
             q_config=q_config,
             input_feat=input_feat,
         )
-        # apply_scale(layer, scales_list, input_feat_dict=input_feat)
         auto_scale.apply_scale(layers[i], scales_list, input_feat_dict=input_feat)
 
         logging.info("Auto clip...")        
