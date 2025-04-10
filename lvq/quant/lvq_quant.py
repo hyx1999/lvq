@@ -11,12 +11,8 @@ from .utils import model_utils
 from lvq.quant.quantize import (
     quant_adamw,
     quant_gptq,
-    auto_scale,
-    auto_clip,
 )
 from lvq.modules import LvqLinear
-
-BS = 32
 
 def RTN(weight: torch.Tensor, group_size: int):
     max_int = 3
@@ -80,9 +76,7 @@ def lvq_quant(
     layers[0] = layers[0].cpu()
     
     lvq_results = {}
-    
-    assert inps.shape[0] % BS == 0
-    
+        
     for i in range(len(layers)):
         logging.info(f"=== Start quantize layer {i} ===")
         layer = layers[i].to(dev)
@@ -93,63 +87,8 @@ def lvq_quant(
             model_utils.get_gate_up_linears(model, layer),
             model_utils.get_down_linears(model, layer),
         ]
-        
-        def cache_input_hook_awq(m, x, y, name, feat_dict):
-            x: torch.Tensor = x[0]
-            feat_dict[name].append(x.cpu())
 
-        input_feat = defaultdict(list)
-        handles = []
-        for names, modules in sequential:
-            handles.append(
-                modules[0].register_forward_hook(
-                    functools.partial(cache_input_hook_awq, name=names[0], feat_dict=input_feat)
-                )
-            )
-        
-        # for idx in range(0, inps.shape[0], BS):
-        #     layer(inps[idx:idx + BS].to(dev), **layer_kwargs)[0]
-        layer(inps, **layer_kwargs)[0]
-        for h in handles:
-            h.remove()
-        input_feat = {k: torch.cat(v, dim=0) for k, v in input_feat.items()}
-        for names, _ in sequential:
-            for name in names[1:]:
-                input_feat[name] = input_feat[names[0]]
-        
-        q_config = {
-            "q_group_size": args.group_size,
-            "zero_point": True,
-        }
-        
-        logging.info("Auto scale...")
-        scales_list = auto_scale.auto_scale_block(
-            layer,
-            layer_kwargs,
-            w_bit=4,
-            q_config=q_config,
-            input_feat=input_feat,
-        )
-        auto_scale.apply_scale(layers[i], scales_list, input_feat_dict=input_feat)
-
-        logging.info("Auto clip...")        
-        clip_list = auto_clip.auto_clip_block(
-            layer,
-            w_bit=4,
-            q_config=q_config,
-            input_feat=input_feat,
-        )
-        auto_clip.apply_clip(layer, clip_list)
-                
-        del input_feat
-        torch.cuda.empty_cache()
-        
-        # logging.info("Memory usage: {:.3f} GiB".format(torch.cuda.memory_allocated() / (2 ** 30)))        
-        # logging.info("Max memory usage: {:.3f} GiB".format(torch.cuda.max_memory_allocated() / (2 ** 30)))
-        
-        layers[i].to(dev)
-
-        def cache_input_hook_gptq(m, x, y, name, hessian_dict, count_dict):
+        def cache_input_hook(m, x, y, name, hessian_dict, count_dict):
             x: torch.Tensor = x[0]
             x = x.view(-1, x.shape[-1]).float()
             num_new = x.shape[0]
@@ -168,13 +107,9 @@ def lvq_quant(
         for names, modules in sequential:
             handles.append(
                 modules[0].register_forward_hook(
-                    functools.partial(cache_input_hook_gptq, name=names[0], hessian_dict=input_hessian, count_dict=input_count)
+                    functools.partial(cache_input_hook, name=names[0], hessian_dict=input_hessian, count_dict=input_count)
                 )
             )
-        # outps = torch.zeros_like(inps)
-        # for idx in range(0, inps.shape[0], BS):
-        #     outps[idx:idx + BS] = layer(inps[idx:idx + BS].to(dev), **layer_kwargs)[0].cpu()
-        # inps = outps
         inps = layer(inps, **layer_kwargs)[0]
         for h in handles:
             h.remove()
@@ -184,10 +119,6 @@ def lvq_quant(
             hessian = input_hessian[names[0]].type_as(modules[0].weight)
             for name, linear in zip(names, modules):
                 if args.recons_method == "adamw":
-                    if model_utils.is_ffn_linear(model, name):
-                        train_iters = int(args.train_iters / 4)
-                    else:
-                        train_iters = args.train_iters
                     quant_results, new_weight = \
                         quant_adamw.reconstruct_weight_adamw(
                             args,
@@ -197,7 +128,7 @@ def lvq_quant(
                             args.lut_size,
                             args.vec_size,
                             args.group_size,
-                            train_iters,
+                            args.train_iters,
                             return_weight=False
                         )
                 elif args.recons_method == "gptq":

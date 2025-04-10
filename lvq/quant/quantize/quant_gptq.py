@@ -1,12 +1,8 @@
+import logging
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from torch.optim.adamw import AdamW
-from lvq.quant.scheduler import get_cosine_schedule_with_warmup
 from lvq.modules import LvqLinear
 from tqdm import tqdm
-from sklearn.cluster import KMeans
-import logging
+from lvq.quant.quantize import quant_vq
 
 DISABLE_TQDM = False
 
@@ -42,11 +38,9 @@ class Quantizer:
         qweight = torch.zeros_like(weight)
         self.codebook = torch.zeros((self.num_lut, self.lut_size, self.vec_size)).type_as(weight)
         for i in range(self.num_lut):
-            kmeans = KMeans(
-                n_clusters=self.lut_size,
-            ).fit(weight.cpu().float().numpy())
-            indices = torch.tensor(kmeans.labels_, dtype=torch.int32, device=weight.device)
-            code = torch.tensor(kmeans.cluster_centers_, dtype=weight.dtype, device=weight.device)
+            indices, code = quant_vq.find_params(weight.unsqueeze(0))
+            indices = indices.squeeze(0)
+            code = code.squeeze(0)
             weight.sub_(code[indices])
             qweight.add_(code[indices])
             self.codebook[i].copy_(code)

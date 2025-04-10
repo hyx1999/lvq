@@ -75,18 +75,6 @@ def init_reconstructor_kmeans(
     norm_weight = norm_weight\
         .reshape((out_features, in_features // vec_size, vec_size))\
         .transpose(0, 1)
-    # for i in range(num_lut):
-    #     for j in tqdm(range(in_features // vec_size), desc="init codebook[{}]...".format(i)):
-    #         weight_group = norm_weight[j, ...]
-    #         kmeans = KMeans(
-    #             n_clusters=lut_size,
-    #         ).fit(weight_group.cpu().float().numpy())
-    #         indices = torch.tensor(kmeans.labels_, dtype=torch.int32, device=weight.device)
-    #         code = torch.tensor(kmeans.cluster_centers_, dtype=weight.dtype, device=weight.device)
-    #         norm_weight[j, ...].sub_(code[indices])
-    #         reconstructor.quantizer.quantizers[i].codebook[j].copy_(code * (2 ** i))
-    #     reconstructor.quantizer.quantizers[i].scale.zero_().add_(1 / (2 ** i))
-    # reconstructor.scales.data.copy_(scales)
     for i in tqdm(range(num_lut), desc="init codebook..."):
         indices, code = quant_vq.find_params(norm_weight, n_centroids=lut_size)
         indices = indices.unsqueeze(-1).expand(-1, -1, norm_weight.shape[-1])

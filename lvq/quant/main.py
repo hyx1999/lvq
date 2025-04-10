@@ -3,9 +3,9 @@ import torch
 from transformers import AutoModelForCausalLM, LlamaForCausalLM, Qwen2ForCausalLM
 from typing import Dict
 from lvq.quant.logger_utils import init_logging
+from lvq.quant.prequant import prequant_rotate, prequant_awq
 from lvq.quant.lvq_quant import lvq_quant
 from lvq.quant.utils import get_loaders, eval_ppl
-import logging
 
 
 def main(args):
@@ -24,8 +24,10 @@ def main(args):
         model=args.model,
     )
 
-    lm.to("cpu")
-    lvq_quant(args, lm, dataloader)
+    # lm.to("cpu")
+    # prequant_rotate(args, lm)
+    # prequant_awq(args, lm, dataloader)
+    # lvq_quant(args, lm, dataloader)
     
     lm.seqlen = 2048
     _, testloader = get_loaders(
@@ -34,7 +36,6 @@ def main(args):
         seqlen=lm.seqlen,
         model=args.model,
     )
-    lm.to(args.device)
     ppl = eval_ppl(lm, testloader, args.device)
     print("ppl: {}".format(ppl))
 
@@ -44,7 +45,7 @@ if __name__ == "__main__":
     # General Arguments
     parser.add_argument('--model', type=str, required=True)
     parser.add_argument('--seed', type=int, default=0, help='Random Seed for HuggingFace and PyTorch')
-    parser.add_argument('--seqlen', type=int, default=512)
+    parser.add_argument('--seqlen', type=int, default=2048)
     parser.add_argument('--calib_dataset', type=str, default='wikitext2',
                         help='Dataset for Calibration (default: wikitext2)')
     parser.add_argument('--eval_dataset', type=str, default='wikitext2',
