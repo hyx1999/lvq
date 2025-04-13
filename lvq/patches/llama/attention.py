@@ -96,7 +96,7 @@ def forward_patch(
 
 def register_attn_modules(args, model: LlamaForCausalLM):
     assert isinstance(model, LlamaForCausalLM)
-    assert model.config._attn_implementation == "sdpq"
+    assert model.config._attn_implementation == "sdpa"
     setattr(model.config, "enable_kv_quant", False)
     setattr(model.config, "k_bits", args.k_bits)
     setattr(model.config, "v_bits", args.v_bits)

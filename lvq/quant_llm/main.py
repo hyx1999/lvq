@@ -29,7 +29,8 @@ def main(args):
     )
 
     register_attn_modules(args, model)
-    prequant_quarot(args, model)
+    if args.use_quarot:
+        prequant_quarot(args, model)
     prequant_awq(args, model, dataloader)
     gptq(args, model, dataloader)
     model.config.enable_kv_quant = True
@@ -70,6 +71,7 @@ if __name__ == "__main__":
                         help='Groupsize for weight quantization. Note that this should be the same as a_groupsize')
     parser.add_argument('--gptq_percdamp', type=float, default=0.01)
     parser.add_argument('--gptq_blocksize', type=int, default=128)
+    parser.add_argument('--use_quarot', action="store_true")
 
     args = parser.parse_args()
     main(args)
