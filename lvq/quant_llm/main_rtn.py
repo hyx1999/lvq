@@ -1,20 +1,28 @@
 import argparse
 import torch
-from transformers import AutoModelForCausalLM, LlamaForCausalLM, Qwen2ForCausalLM
+from transformers import AutoModelForCausalLM, AutoTokenizer
 from typing import Dict
-from lvq.quant.logger_utils import init_logging
-from lvq.quant.prequant import prequant_quarot, prequant_awq
-from lvq.quant.lvq_quant import lvq_quant
-from lvq.quant.utils import get_loaders, eval_ppl
+from lvq.quant_llm.logger_utils import init_logging
+from lvq.quant_llm.utils import get_loaders, eval_ppl, model_utils
+from tqdm import tqdm
 
+def RTN(weight: torch.Tensor, group_size: int):
+    max_int = 3
+    min_int = -4
+    out_features = weight.shape[0]
+    in_features = weight.shape[1]
+    weight = weight.reshape(out_features, in_features // group_size, group_size)
+    scales = weight.abs().max(dim=-1, keepdim=True).values / max_int
+
+    qweight = torch.clamp(torch.round(weight / scales), min_int, max_int)
+    new_weight = qweight * scales
+    return new_weight.reshape(out_features, in_features)
 
 def main(args):
     init_logging()
 
     lm = AutoModelForCausalLM.from_pretrained(args.model)
     lm.seqlen = args.seqlen
-    
-    assert isinstance(lm, (LlamaForCausalLM, Qwen2ForCausalLM))
     
     dataloader, _ = get_loaders(
         args.calib_dataset,
@@ -24,18 +32,25 @@ def main(args):
         model=args.model,
     )
 
-    prequant_awq(args, lm, dataloader)
-    lvq_quant(args, lm, dataloader)
-    
-    lm.seqlen = 2048
     _, testloader = get_loaders(
         args.eval_dataset,
         seed=args.seed,
         seqlen=lm.seqlen,
         model=args.model,
     )
+
+    lm.to(args.device)
+    layers = model_utils.get_layers(lm)
+    linears = []
+    for name, module in layers.named_modules():
+        if isinstance(module, torch.nn.Linear):
+            linears.append(module)
+    for module in tqdm(linears):
+        module.weight.data.copy_(RTN(module.weight, args.group_size))
+    
     ppl = eval_ppl(lm, testloader, args.device)
     print("ppl: {}".format(ppl))
+    # Llama-3.2-1B => ppl: 294.1290588378906
 
 
 if __name__ == "__main__":
@@ -61,14 +76,11 @@ if __name__ == "__main__":
     parser.add_argument('--vec_size', type=int, default=4)
     parser.add_argument('--group_size', type=int, default=128,
                         help='Groupsize for weight quantization. Note that this should be the same as a_groupsize')
-    parser.add_argument('--train_iters', type=int, default=512)
+    parser.add_argument('--train_iters', type=int, default=2048)
     parser.add_argument('--lr', type=float, default=1e-4)
     parser.add_argument('--min_lr', type=float, default=1e-6)
-    parser.add_argument('--batch_size', type=int, default=8)
-    parser.add_argument('--recons_method', type=str, default="adamw")
-    parser.add_argument('--gptq_percdamp', type=float, default=0.01)
-    parser.add_argument('--gptq_blocksize', type=int, default=128)
-    parser.add_argument('--layer_train_epochs', type=int, default=10)
 
     args = parser.parse_args()
+    assert args.lut_size == 16
+    assert args.vec_size == 4
     main(args)

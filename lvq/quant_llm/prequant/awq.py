@@ -7,8 +7,8 @@ import torch.nn as nn
 from transformers import PreTrainedModel
 from collections import defaultdict
 from typing import Dict, List, Tuple
-from lvq.quant.utils import model_utils
-from lvq.quant.quantize import (
+from lvq.quant_llm.utils import model_utils
+from lvq.quant_llm.quantize import (
     auto_scale,
     auto_clip,
 )
@@ -108,7 +108,7 @@ def prequant_awq(
         scales_list = auto_scale.auto_scale_block(
             layer,
             layer_kwargs,
-            w_bit=4,
+            w_bit=args.w_bits,
             q_config=q_config,
             input_feat=input_feat,
         )
@@ -117,7 +117,7 @@ def prequant_awq(
         logging.info("Auto clip...")        
         clip_list = auto_clip.auto_clip_block(
             layer,
-            w_bit=4,
+            w_bit=args.w_bits,
             q_config=q_config,
             input_feat=input_feat,
         )

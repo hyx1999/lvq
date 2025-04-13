@@ -8,30 +8,15 @@ from transformers import PreTrainedModel
 from collections import defaultdict
 from typing import Dict, List, Tuple
 from .utils import model_utils
-from lvq.quant.quantize import (
-    quant_adamw,
+from lvq.quant_llm.quantize import (
     quant_gptq,
 )
-from lvq.modules import LvqLinear
-
+from lvq.modules import QLinear
 from torch.optim.adamw import AdamW
-from lvq.quant.scheduler import get_cosine_schedule_with_warmup
-
-def RTN(weight: torch.Tensor, group_size: int):
-    max_int = 3
-    min_int = -4
-    out_features = weight.shape[0]
-    in_features = weight.shape[1]
-    weight = weight.reshape(out_features, in_features // group_size, group_size)
-    scales = weight.abs().max(dim=-1, keepdim=True).values / max_int
-
-    qweight = torch.clamp(torch.round(weight / scales), min_int, max_int)
-    new_weight = qweight * scales
-    return new_weight.reshape(out_features, in_features)
 
 
 @torch.no_grad()
-def lvq_quant(
+def gptq(
     args,
     model: PreTrainedModel,
     dataloader: List[Tuple[torch.Tensor, ...]],
@@ -121,63 +106,30 @@ def lvq_quant(
             logging.info("Quant Linear[{}]".format(", ".join(names)))
             hessian = input_hessian[names[0]].type_as(modules[0].weight)
             for name, linear in zip(names, modules):
-                if args.recons_method == "adamw":
-                    quant_results, new_weight = \
-                        quant_adamw.reconstruct_weight_adamw(
-                            args,
-                            linear.weight,
-                            hessian,
-                            args.num_lut,
-                            args.lut_size,
-                            args.vec_size,
-                            args.group_size,
-                            args.train_iters,
-                            return_weight=False
-                        )
-                elif args.recons_method == "gptq":
-                    quant_results, new_weight = \
-                        quant_gptq.reconstruct_weight_gptq(
-                            args,
-                            linear.weight,
-                            hessian,
-                            args.num_lut,
-                            args.lut_size,
-                            args.vec_size,
-                            args.group_size,
-                            return_weight=False
-                        )
-                else:
-                    raise ValueError
-                quant_results.update({
-                    "weight": linear.weight,
-                })
+                quant_results, new_weight = \
+                    quant_gptq.quant_weight_gptq(
+                        args,
+                        linear.weight,
+                        hessian,
+                        args.w_bits,
+                        args.group_size,
+                        return_weight=True
+                    )
                 if linear.bias is not None:
                     quant_results.update({"bias": linear.bias})
-                lvq_linear = LvqLinear(
+                qlinear = QLinear(
                     linear.in_features,
                     linear.out_features,
-                    args.num_lut,
-                    args.lut_size,
-                    args.vec_size,
-                    args.group_size,
+                    num_bits=args.w_bits,
+                    group_size=args.group_size,
                     bias=True if linear.bias is not None else False,
                     dtype=linear.weight.dtype,
                     device=linear.weight.device,
                 )
-                lvq_linear.load_state_dict(quant_results)
-                model_utils.replace_module(layer, name, lvq_linear)
+                qlinear.load_state_dict(quant_results)
+                model_utils.replace_module(layer, name, qlinear)
             torch.cuda.empty_cache()
 
-        optimizer = AdamW(layer.parameters(), lr=args.lr)
-        scheduler = get_cosine_schedule_with_warmup(
-            optimizer, 
-            num_warmup_steps=0, num_training_steps=args.nsamples * args.layer_train_epochs, 
-            max_learning_rate=args.lr, min_learning_rate=args.min_lr
-        )        
-        with torch.enable_grad():
-            
-            ...
-            
         layer = layer.cpu()
         gc.collect()
         torch.cuda.empty_cache()

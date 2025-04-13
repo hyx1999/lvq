@@ -4,8 +4,8 @@ import transformers
 import tqdm, math
 from transformers.models.llama.modeling_llama import LlamaRMSNorm, LlamaForCausalLM
 from transformers.models.qwen2.modeling_qwen2 import Qwen2RMSNorm, Qwen2ForCausalLM
-from lvq.quant.utils import model_utils
-from lvq.quant.prequant.utils.hadmard import random_hadamard_matrix, is_pow2
+from lvq.quant_llm.utils import model_utils
+from lvq.ops.hadmard import random_hadamard_matrix, is_pow2
 
 
 def fuse_ln_linear(layernorm: torch.nn.Module, linear_layers: typing.Iterable[torch.nn.Linear]) -> None:

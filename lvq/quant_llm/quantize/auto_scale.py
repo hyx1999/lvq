@@ -80,7 +80,7 @@ def scale_gelu_fc(gelu, fc, scales):
 
 @torch.no_grad()
 def auto_scale_block(module, module_kwargs, w_bit, q_config, input_feat):
-    from .quantizer import pseudo_quantize_tensor
+    from lvq.ops.quantize import pseudo_quantize_tensor
 
     # firstly, get the weight quantize function
     if w_bit is not None:

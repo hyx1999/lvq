@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from .quantizer import pseudo_quantize_tensor
+from lvq.ops.quantize import pseudo_quantize_tensor
 import gc
 from tqdm import tqdm
 
