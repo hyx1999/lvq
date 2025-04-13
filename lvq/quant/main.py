@@ -3,7 +3,7 @@ import torch
 from transformers import AutoModelForCausalLM, LlamaForCausalLM, Qwen2ForCausalLM
 from typing import Dict
 from lvq.quant.logger_utils import init_logging
-from lvq.quant.prequant import prequant_rotate, prequant_awq
+from lvq.quant.prequant import prequant_quarot, prequant_awq
 from lvq.quant.lvq_quant import lvq_quant
 from lvq.quant.utils import get_loaders, eval_ppl
 
@@ -24,10 +24,8 @@ def main(args):
         model=args.model,
     )
 
-    # lm.to("cpu")
-    # prequant_rotate(args, lm)
-    # prequant_awq(args, lm, dataloader)
-    # lvq_quant(args, lm, dataloader)
+    prequant_awq(args, lm, dataloader)
+    lvq_quant(args, lm, dataloader)
     
     lm.seqlen = 2048
     _, testloader = get_loaders(
@@ -70,6 +68,7 @@ if __name__ == "__main__":
     parser.add_argument('--recons_method', type=str, default="adamw")
     parser.add_argument('--gptq_percdamp', type=float, default=0.01)
     parser.add_argument('--gptq_blocksize', type=int, default=128)
+    parser.add_argument('--layer_train_epochs', type=int, default=10)
 
     args = parser.parse_args()
     main(args)

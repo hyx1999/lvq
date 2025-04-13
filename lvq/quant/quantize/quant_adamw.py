@@ -4,9 +4,8 @@ import torch.nn.functional as F
 from torch.optim.adamw import AdamW
 from lvq.quant.scheduler import get_cosine_schedule_with_warmup
 from lvq.quant.quantize import quant_vq
-from lvq.modules import LvqLinear
+from lvq.modules import LvqLinear, ResidualVectorQuantizer, SharedResidualVectorQuantizer
 from tqdm import tqdm
-from sklearn.cluster import KMeans
 import logging
 
 DISABLE_TQDM = False
@@ -87,6 +86,38 @@ def init_reconstructor_kmeans(
 
 
 @torch.no_grad()
+def init_reconstructor_share_kmeans(
+    reconstructor: LvqLinear,
+    weight: torch.Tensor,
+):
+    out_features = reconstructor.out_features
+    in_features = reconstructor.in_features
+    num_lut = reconstructor.num_lut
+    lut_size = reconstructor.lut_size
+    vec_size = reconstructor.vec_size
+    group_size = reconstructor.group_size
+    
+    reconstructor.weight.data.copy_(weight)
+
+    weight = weight.reshape((
+        out_features,
+        in_features // group_size,
+        group_size,
+    ))
+    scales = weight.abs().max(dim=-1).values
+    # scales = weight.pow(2).mean(dim=-1).sqrt()
+    norm_weight = normalize(weight, scales)
+    norm_weight = norm_weight\
+        .reshape((out_features, in_features // vec_size, vec_size))\
+        .transpose(0, 1)
+    _, code = quant_vq.find_params(norm_weight, n_centroids=lut_size)
+    reconstructor.quantizer.quantizers[0].codebook.copy_(code)
+    for i in tqdm(range(num_lut), desc="init codebook..."):
+        reconstructor.quantizer.quantizers[i].scale.zero_().add_(1 / (2 ** i))
+    reconstructor.scales.data.copy_(scales)
+
+
+@torch.no_grad()
 def reconstruct_weight_adamw(
     args,
     weight: torch.Tensor,
@@ -107,24 +138,29 @@ def reconstruct_weight_adamw(
     
     assert in_features % group_size == 0
     assert in_features % vec_size == 0
-    
-    reconstructor = LvqLinear(
-        in_features=in_features,
-        out_features=out_features,
-        num_lut=num_lut,
-        lut_size=lut_size,
-        vec_size=vec_size,
-        group_size=group_size,
-        bias=False,
-        device=device,
-        dtype=dtype,
-    )
-    
+
+    lvq_kwargs = {
+        "in_features": in_features,
+        "out_features": out_features,
+        "num_lut": num_lut,
+        "lut_size": lut_size,
+        "vec_size": vec_size,
+        "group_size": group_size,
+        "bias": False,
+        "device": device,
+        "dtype": dtype,
+    }
+        
     # init params...
     if init_method == "linear":
+        reconstructor = LvqLinear(**lvq_kwargs, quantizer_type=ResidualVectorQuantizer)
         init_reconstructor_linear(reconstructor, weight)
     elif init_method == "kmeans":
+        reconstructor = LvqLinear(**lvq_kwargs, quantizer_type=ResidualVectorQuantizer)
         init_reconstructor_kmeans(reconstructor, weight)
+    elif init_method == "share-kmeans":
+        reconstructor = LvqLinear(**lvq_kwargs, quantizer_type=SharedResidualVectorQuantizer)
+        init_reconstructor_share_kmeans(reconstructor, weight)
     else:
         raise ValueError
     
@@ -149,9 +185,7 @@ def reconstruct_weight_adamw(
             optimizer.step()
             scheduler.step()
             bar.update(1)
-            if iter % 8 == 0:
-                bar.set_postfix_str("loss = {:.5f}".format(loss.item()))
-    
+
     # compute loss
     reconstructor.eval()
     recons_weight: torch.Tensor = reconstructor.quantize_weight()

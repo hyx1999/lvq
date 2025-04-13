@@ -62,3 +62,35 @@ class ResidualVectorQuantizer(nn.Module):
             x_qs.append(x_q)
         x_q = torch.stack(x_qs).sum(dim=0)
         return x_q
+
+
+class SharedResidualVectorQuantizer(nn.Module):
+    
+    def __init__(self,
+        num_quantizer: int,
+        shape: Tuple[int, ...],
+        scales=None,
+        dtype=None,
+        device=None,
+    ):
+        super().__init__()
+        self.num_quantizers = num_quantizer
+        if scales is None:
+            scales = [1.0] * num_quantizer
+        self.quantizers: List[VectorQuantizer] = nn.ModuleList(
+            [VectorQuantizer(shape, scales[i], dtype=dtype, device=device) for i in range(num_quantizer)]
+        )
+        self.share_codebook()
+    
+    def share_codebook(self):
+        for i in range(self.num_quantizers):
+            self.quantizers[i].codebook.data = self.quantizers[0].codebook.data
+    
+    def forward(self, x: torch.Tensor):
+        x_qs = []
+        for i in range(self.num_quantizers):
+            x_q = self.quantizers[i](x)
+            x = x - x_q
+            x_qs.append(x_q)
+        x_q = torch.stack(x_qs).sum(dim=0)
+        return x_q

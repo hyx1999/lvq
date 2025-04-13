@@ -96,3 +96,36 @@ def is_ffn_linear(model: PreTrainedModel, name: str):
     if isinstance(model, (LlamaForCausalLM, Qwen2ForCausalLM)):
         return any(n in name for n in ['gate_proj', 'up_proj', 'down_proj'])
     raise ValueError
+
+
+def get_lm_head(model):
+    if isinstance(model, (LlamaForCausalLM, Qwen2ForCausalLM)):
+        return model.lm_head
+    else:
+        raise ValueError(f'Unknown model type')
+
+
+def get_embeddings(model) -> list[torch.nn.Module]:
+    if isinstance(model, (LlamaForCausalLM, Qwen2ForCausalLM)):
+        return [model.model.embed_tokens]
+    else:
+        raise ValueError(f'Unknown model type')
+
+
+def get_pre_head_layernorm(model):
+    if isinstance(model, (LlamaForCausalLM, Qwen2ForCausalLM)):
+        pre_head_layernorm = model.model.norm
+    else:
+        raise ValueError(f'Unknown model type')
+    return pre_head_layernorm
+
+
+def untie_word_embedding(model):
+    embeddings = get_embeddings(model)
+    if model.config.tie_word_embeddings:    
+        for emb in embeddings:
+            emb: torch.nn.Embedding = emb
+            emb.weight = torch.nn.Parameter(
+                emb.weight.data.clone(),
+                requires_grad=emb.weight.requires_grad,
+            )

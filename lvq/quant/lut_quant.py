@@ -13,25 +13,12 @@ from lvq.quant.quantize import (
     quant_gptq,
 )
 from lvq.modules import LvqLinear
-
 from torch.optim.adamw import AdamW
 from lvq.quant.scheduler import get_cosine_schedule_with_warmup
 
-def RTN(weight: torch.Tensor, group_size: int):
-    max_int = 3
-    min_int = -4
-    out_features = weight.shape[0]
-    in_features = weight.shape[1]
-    weight = weight.reshape(out_features, in_features // group_size, group_size)
-    scales = weight.abs().max(dim=-1, keepdim=True).values / max_int
-
-    qweight = torch.clamp(torch.round(weight / scales), min_int, max_int)
-    new_weight = qweight * scales
-    return new_weight.reshape(out_features, in_features)
-
 
 @torch.no_grad()
-def lvq_quant(
+def lut_quant(
     args,
     model: PreTrainedModel,
     dataloader: List[Tuple[torch.Tensor, ...]],

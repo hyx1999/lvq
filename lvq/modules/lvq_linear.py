@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn.parameter import Parameter
-from .vec_quantizer import ResidualVectorQuantizer
+from .vec_quantizer import ResidualVectorQuantizer, SharedResidualVectorQuantizer
 
 
 class LvqLinear(nn.Module):
@@ -18,6 +18,7 @@ class LvqLinear(nn.Module):
         bias: bool = True,
         device: torch.device | str = None,
         dtype: torch.dtype | str = None,
+        quantizer_type: ResidualVectorQuantizer | SharedResidualVectorQuantizer = ResidualVectorQuantizer
     ) -> None:
         super().__init__()
         factory_kwargs = {"device": device, "dtype": dtype}
@@ -40,7 +41,7 @@ class LvqLinear(nn.Module):
             self.register_parameter("bias", None)
 
         self.scales = Parameter(torch.empty(out_features, in_features // group_size, **factory_kwargs))
-        self.quantizer = ResidualVectorQuantizer(
+        self.quantizer = quantizer_type(
             num_lut,
             shape=(in_features // vec_size, lut_size, vec_size),
             dtype=dtype,
