@@ -69,6 +69,18 @@ def get_down_linears(model: PreTrainedModel, layer: nn.Module):
     raise ValueError
 
 
+def get_qk_scaler(model: PreTrainedModel, layer: nn.Module):
+    if isinstance(model, (LlamaForCausalLM, Qwen2ForCausalLM)):
+        return layer.self_attn.qk_scaler
+    raise ValueError
+
+
+def get_self_attn(model: PreTrainedModel, layer: nn.Module):
+    if isinstance(model, (LlamaForCausalLM, Qwen2ForCausalLM)):
+        return layer.self_attn
+    raise ValueError
+
+
 def get_op_by_name(module, op_name):
     # get the op by its name relative to the module
     for name, m in module.named_modules():

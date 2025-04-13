@@ -3,6 +3,7 @@ import torch
 from transformers import AutoModelForCausalLM, LlamaForCausalLM, Qwen2ForCausalLM
 from typing import Dict
 from lvq.quant_llm.logger_utils import init_logging
+from lvq.patches import register_attn_modules
 from lvq.quant_llm.prequant import (
     prequant_quarot,
     prequant_awq,
@@ -14,31 +15,33 @@ from lvq.quant_llm.utils import get_loaders, eval_ppl
 def main(args):
     init_logging()
 
-    lm = AutoModelForCausalLM.from_pretrained(args.model)
-    lm.seqlen = args.seqlen
+    model = AutoModelForCausalLM.from_pretrained(args.model)
+    model.seqlen = args.seqlen
     
-    assert isinstance(lm, (LlamaForCausalLM, Qwen2ForCausalLM))
+    assert isinstance(model, (LlamaForCausalLM, Qwen2ForCausalLM))
     
     dataloader, _ = get_loaders(
         args.calib_dataset,
         nsamples=args.nsamples,
         seed=args.seed,
-        seqlen=lm.seqlen,
+        seqlen=model.seqlen,
         model=args.model,
     )
 
-    prequant_quarot(args, lm)
-    prequant_awq(args, lm, dataloader)
-    gptq(args, lm, dataloader)
+    register_attn_modules(args, model)
+    prequant_quarot(args, model)
+    prequant_awq(args, model, dataloader)
+    gptq(args, model, dataloader)
+    model.config.enable_kv_quant = True
     
-    lm.seqlen = 2048
+    model.seqlen = 2048
     _, testloader = get_loaders(
         args.eval_dataset,
         seed=args.seed,
-        seqlen=lm.seqlen,
+        seqlen=model.seqlen,
         model=args.model,
     )
-    ppl = eval_ppl(lm, testloader, args.device)
+    ppl = eval_ppl(model, testloader, args.device)
     print("ppl: {}".format(ppl))
 
 
@@ -61,8 +64,8 @@ if __name__ == "__main__":
     parser.add_argument('--device', type=str, default="cuda")
 
     parser.add_argument('--w_bits', type=int, default=4)
-    parser.add_argument('--k_bits', type=int, default=2)
-    parser.add_argument('--v_bits', type=int, default=2)
+    parser.add_argument('--k_bits', type=int, default=4)
+    parser.add_argument('--v_bits', type=int, default=4)
     parser.add_argument('--group_size', type=int, default=128,
                         help='Groupsize for weight quantization. Note that this should be the same as a_groupsize')
     parser.add_argument('--gptq_percdamp', type=float, default=0.01)

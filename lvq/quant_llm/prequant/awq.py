@@ -11,6 +11,7 @@ from lvq.quant_llm.utils import model_utils
 from lvq.quant_llm.quantize import (
     auto_scale,
     auto_clip,
+    auto_scale_qk,
 )
 
 @torch.no_grad()
@@ -77,6 +78,7 @@ def prequant_awq(
             model_utils.get_gate_up_linears(model, layer),
             model_utils.get_down_linears(model, layer),
         ]
+        qk_scaler = model_utils.get_qk_scaler(model, layer)
         
         def cache_input_hook_awq(m, x, y, name, feat_dict):
             x: torch.Tensor = x[0]
@@ -90,6 +92,11 @@ def prequant_awq(
                     functools.partial(cache_input_hook_awq, name=names[0], feat_dict=input_feat)
                 )
             )
+        handles.append(
+            qk_scaler.register_forward_hook(
+                functools.partial(cache_input_hook_awq, name="self_attn.qk_scaler", feat_dict=input_feat)
+            )
+        )
 
         layer(inps, **layer_kwargs)[0]
         for h in handles:
@@ -114,6 +121,15 @@ def prequant_awq(
         )
         auto_scale.apply_scale(layers[i], scales_list, input_feat_dict=input_feat)
 
+        logging.info("Auto scale QK...")
+        self_attn = model_utils.get_self_attn(model, layer)
+        scales = auto_scale_qk.auto_scale_block(
+            self_attn,
+            layer_kwargs,
+            input_feat=input_feat,
+        )
+        auto_scale_qk.apply_scale(self_attn, scales)
+
         logging.info("Auto clip...")        
         clip_list = auto_clip.auto_clip_block(
             layer,
@@ -121,7 +137,7 @@ def prequant_awq(
             q_config=q_config,
             input_feat=input_feat,
         )
-        auto_clip.apply_clip(layer, clip_list)        
+        auto_clip.apply_clip(layer, clip_list)
 
         layer = layer.cpu()
         gc.collect()

@@ -75,7 +75,6 @@ def gptq(
             model_utils.get_gate_up_linears(model, layer),
             model_utils.get_down_linears(model, layer),
         ]
-
         def cache_input_hook(m, x, y, name, hessian_dict, count_dict):
             x: torch.Tensor = x[0]
             x = x.view(-1, x.shape[-1]).float()
@@ -128,7 +127,8 @@ def gptq(
                 )
                 qlinear.load_state_dict(quant_results)
                 model_utils.replace_module(layer, name, qlinear)
-            torch.cuda.empty_cache()
+        
+        
 
         layer = layer.cpu()
         gc.collect()
