@@ -1,6 +1,7 @@
+import math
 import torch
 import torch.nn as nn
-
+import fast_hadamard_transform
 
 def pseudo_quantize_tensor(
     x: torch.Tensor, n_bit=8, zero_point=False, inplace=False, get_scale_zp=False
@@ -62,16 +63,36 @@ class PseudoKVQuantizer(nn.Module):
         self.v_bits = config.v_bits
         self.key_group_size = 32
     
+    def transform_states(self, states: torch.Tensor):
+        B, H, L, D = states.shape
+        if D % 128 == 0:
+            states = states.view(B, H, L, D // 128, 128)
+            fast_hadamard_transform.hadamard_transform(states, 1 / math.sqrt(128))
+        elif D % 64 == 0:
+            states = states.view(B, H, L, D // 64, 64)
+            fast_hadamard_transform.hadamard_transform(states, 1 / math.sqrt(64))
+        elif D % 32 == 0:
+            states = states.view(B, H, L, D // 32, 32)
+            fast_hadamard_transform.hadamard_transform(states, 1 / math.sqrt(32))
+        else:
+            raise ValueError
+        states = states.reshape(B, H, L, D)
+        return states
+    
     def forward(self, 
         key_states: torch.Tensor,    # [B, H, L, D]
         value_states: torch.Tensor,  # [B, H, L, D]
     ):
         if self.config.enable_kv_quant:
             if self.k_bits < 16:
+                key_states = self.transform_states(key_states)
                 mean_key_states = get_mean_key_states(key_states, self.key_group_size)
                 key_states = pseudo_quantize_tensor(
                     key_states - mean_key_states, n_bit=self.k_bits, zero_point=True
                 ) + mean_key_states
+                key_states = self.transform_states(key_states)
             if self.v_bits < 16:
+                value_states = self.transform_states(value_states)
                 value_states = pseudo_quantize_tensor(value_states, n_bit=self.v_bits, zero_point=True)
+                value_states = self.transform_states(value_states)
         return key_states, value_states

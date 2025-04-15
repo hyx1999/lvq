@@ -31,9 +31,11 @@ def main(args):
     register_attn_modules(args, model)
     if args.use_quarot:
         prequant_quarot(args, model)
-    prequant_awq(args, model, dataloader)
+    if args.use_awq:
+        prequant_awq(args, model, dataloader)
     gptq(args, model, dataloader)
-    model.config.enable_kv_quant = True
+    if args.use_kv_quant:
+        model.config.enable_kv_quant = True
     
     model.seqlen = 2048
     _, testloader = get_loaders(
@@ -51,7 +53,7 @@ if __name__ == "__main__":
     # General Arguments
     parser.add_argument('--model', type=str, required=True)
     parser.add_argument('--seed', type=int, default=0, help='Random Seed for HuggingFace and PyTorch')
-    parser.add_argument('--seqlen', type=int, default=2048)
+    parser.add_argument('--seqlen', type=int, default=512)
     parser.add_argument('--calib_dataset', type=str, default='wikitext2',
                         help='Dataset for Calibration (default: wikitext2)')
     parser.add_argument('--eval_dataset', type=str, default='wikitext2',
@@ -65,13 +67,15 @@ if __name__ == "__main__":
     parser.add_argument('--device', type=str, default="cuda")
 
     parser.add_argument('--w_bits', type=int, default=4)
-    parser.add_argument('--k_bits', type=int, default=4)
-    parser.add_argument('--v_bits', type=int, default=4)
+    parser.add_argument('--k_bits', type=int, default=8)
+    parser.add_argument('--v_bits', type=int, default=8)
     parser.add_argument('--group_size', type=int, default=128,
                         help='Groupsize for weight quantization. Note that this should be the same as a_groupsize')
-    parser.add_argument('--gptq_percdamp', type=float, default=0.01)
+    parser.add_argument('--gptq_percdamp', type=float, default=0.05)
     parser.add_argument('--gptq_blocksize', type=int, default=128)
+    parser.add_argument('--use_awq', action="store_true")
     parser.add_argument('--use_quarot', action="store_true")
+    parser.add_argument('--use_kv_quant', action="store_true")
 
     args = parser.parse_args()
     main(args)
